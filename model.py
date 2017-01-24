@@ -13,15 +13,16 @@ from keras.regularizers import l2
 from tqdm import tqdm
 
 
-DRIVING_LOG_FILE = 'driving_log.csv'
+NORMAL_DRIVING_LOG_FILE = 'normal_driving_log.csv'
+RECOVERY_DRIVING_LOG_FILE = 'recovery_driving_log.csv'
 MODEL_FILE = 'model.json'
 WEIGHTS_FILE = 'model.h5'
 BATCH_SIZE = 128
-EPOCHS = 5
+EPOCHS = 10
 LEARNING_RATE = 1e-4
 LAMBDA = 1e-5
 KEEP_PROB = 0.5
-SIDE_CAMERA_STEERING = 0.25
+SIDE_CAMERA_STEERING = 0.2
 
 
 def mirror_image(in_img):
@@ -40,18 +41,21 @@ def predict_steering_angle(model, img_name):
 
 def create_training_set():
     # Load training set from the driving log
-    driving_log = pd.read_csv(DRIVING_LOG_FILE)
+    normal_driving_log = pd.read_csv(NORMAL_DRIVING_LOG_FILE)
+    recovery_driving_log = pd.read_csv(RECOVERY_DRIVING_LOG_FILE)
 
     # Get number of log rows
-    n_rows = len(driving_log.index)
-    assert(n_rows > 0)
+    n_rows_normal = len(normal_driving_log.index)
+    assert(n_rows_normal > 0)
+    n_rows_recovery = len(recovery_driving_log.index)
+    assert(n_rows_recovery > 0)
 
     # Define number of images as the number of rows multiplied by 2 (mirrored) and 3 (side cameras)
-    n_images = n_rows * 2 * 3
+    n_images = n_rows_normal * 2 * 3 + n_rows_recovery *2
 
     # Get sample image to find out its final dimensions
-    assert(len(driving_log.ix[0]) > 0)
-    img = cv2.imread(re.search('IMG\/.+', driving_log.ix[0][0]).group())
+    assert(len(normal_driving_log.ix[0]) > 0)
+    img = cv2.imread(re.search('IMG\/.+', normal_driving_log.ix[0][0]).group())
 
     # Create empty training set
     X_train = np.empty(shape=((n_images,) + get_processed_image_shape(img)), dtype='uint8')
@@ -59,9 +63,9 @@ def create_training_set():
     print("Training set shape %s" % (X_train.shape,))
 
     # Load images
-    pbar_rows = tqdm(range(n_rows), unit=' rows')
     idx = 0
-    for pbar_row, (log_idx, row) in zip(pbar_rows, driving_log.iterrows()):
+    pbar_rows = tqdm(range(n_rows_normal), desc='Normal', unit=' rows')
+    for pbar_row, (log_idx, row) in zip(pbar_rows, normal_driving_log.iterrows()):
         assert(row.shape[0] > 3)
         angle = row[3]
         # Center
@@ -91,8 +95,20 @@ def create_training_set():
         X_train[idx] = mirror_image(img)
         y_train[idx] = -(angle - SIDE_CAMERA_STEERING)
         idx += 1
-#        print("Center %f %f, Left %f %f, Right %f %f" % (y_train[idx-6], y_train[idx-5], y_train[idx-4], y_train[idx-3], y_train[idx-2], y_train[idx-1]))
-#        print("Center %f %f, Left %f, Right %f" % (y_train[idx-4], y_train[idx-3], y_train[idx-2], y_train[idx-1]))
+
+    pbar_rows = tqdm(range(n_rows_recovery), desc='Recovery', unit=' rows')
+    for pbar_row, (log_idx, row) in zip(pbar_rows, recovery_driving_log.iterrows()):
+        assert(row.shape[0] > 3)
+        angle = row[3]
+        # Center
+        img = process_image(cv2.imread(re.search('IMG\/.+', row[0]).group()))
+        X_train[idx] = img
+        y_train[idx] = angle
+        idx += 1
+        # Center mirror
+        X_train[idx] = mirror_image(img)
+        y_train[idx] = -angle
+        idx += 1
 
     return X_train, y_train
 
@@ -100,12 +116,6 @@ def create_model():
     # Model definition
     activation_function = 'tanh'
     model = Sequential()
-    #model.add(Convolution2D(24,
-    #                        5,5,
-    #                        subsample=(2,2),
-    #                        border_mode='valid',
-    #                        input_shape=X_train.shape[1:],
-    #                        activation=activation_function))
     model.add(Convolution2D(24,
                             5,5,
                             subsample=(2,2),
@@ -115,11 +125,6 @@ def create_model():
                             W_regularizer=l2(LAMBDA)))
     print("Input shape %s" % (model.layers[-1].input_shape,))
     print("Conv. layer 1 %s" % (model.layers[-1].output_shape,))
-    #model.add(Convolution2D(36,
-    #                        5,5,
-    #                        subsample=(2,2),
-    #                        border_mode='valid',
-    #                        activation=activation_function))
     model.add(Convolution2D(36,
                             5,5,
                             subsample=(2,2),
@@ -127,11 +132,6 @@ def create_model():
                             activation=activation_function,
                             W_regularizer=l2(LAMBDA)))
     print("Conv. layer 2 %s" % (model.layers[-1].output_shape,))
-    #model.add(Convolution2D(48,
-    #                        5,5,
-    #                        subsample=(2,2),
-    #                        border_mode='valid',
-    #                        activation=activation_function))
     model.add(Convolution2D(48,
                             5,5,
                             subsample=(2,2),
@@ -139,20 +139,12 @@ def create_model():
                             activation=activation_function,
                             W_regularizer=l2(LAMBDA)))
     print("Conv. layer 3 %s" % (model.layers[-1].output_shape,))
-    #model.add(Convolution2D(64,
-    #                        3,3,
-    #                        border_mode='valid',
-    #                        activation=activation_function))
     model.add(Convolution2D(64,
                             3,3,
                             border_mode='valid',
                             activation=activation_function,
                             W_regularizer=l2(LAMBDA)))
     print("Conv. layer 4 %s" % (model.layers[-1].output_shape,))
-    #model.add(Convolution2D(64,
-    #                        3,3,
-    #                        border_mode='valid',
-    #                        activation=activation_function))
     model.add(Convolution2D(64,
                             3,3,
                             border_mode='valid',
@@ -161,28 +153,21 @@ def create_model():
     print("Conv. layer 5 %s" % (model.layers[-1].output_shape,))
     model.add(Flatten())
     print("Flatten %s" % (model.layers[-1].output_shape,))
-    #model.add(Dense(100,
-    #                activation=activation_function))
     model.add(Dense(100,
                     activation=activation_function,
                     W_regularizer=l2(LAMBDA)))
     model.add(Dropout(KEEP_PROB))
     print("Fully-connected layer 1 %s" % (model.layers[-1].output_shape,))
-    #model.add(Dense(50,
-    #                activation=activation_function))
     model.add(Dense(50,
                     activation=activation_function,
                     W_regularizer=l2(LAMBDA)))
     model.add(Dropout(KEEP_PROB))
     print("Fully-connected layer 2 %s" % (model.layers[-1].output_shape,))
-    #model.add(Dense(10,
-    #                activation=activation_function))
     model.add(Dense(10,
                     activation=activation_function,
                     W_regularizer=l2(LAMBDA)))
     model.add(Dropout(KEEP_PROB))
     print("Fully-connected layer 3 %s" % (model.layers[-1].output_shape,))
-    #model.add(Dense(1))
     model.add(Dense(1,
                     W_regularizer=l2(LAMBDA)))
     print("Output %s" % (model.layers[-1].output_shape,))
@@ -209,12 +194,12 @@ def save_model(model):
 
 
 X_train, y_train = create_training_set()
-save_image(X_train[1200], "test0_%.2f.jpg" % (y_train[1200]))
-save_image(X_train[1201], "test1_%.2f.jpg" % (y_train[1201]))
-save_image(X_train[1202], "test2_%.2f.jpg" % (y_train[1202]))
-save_image(X_train[1203], "test3_%.2f.jpg" % (y_train[1203]))
-save_image(X_train[1204], "test4_%.2f.jpg" % (y_train[1204]))
-save_image(X_train[1205], "test5_%.2f.jpg" % (y_train[1205]))
+#save_image(X_train[1200], "test0_%.2f.jpg" % (y_train[1200]))
+#save_image(X_train[1201], "test1_%.2f.jpg" % (y_train[1201]))
+#save_image(X_train[1202], "test2_%.2f.jpg" % (y_train[1202]))
+#save_image(X_train[1203], "test3_%.2f.jpg" % (y_train[1203]))
+#save_image(X_train[1204], "test4_%.2f.jpg" % (y_train[1204]))
+#save_image(X_train[1205], "test5_%.2f.jpg" % (y_train[1205]))
 
 model = create_model()
 
@@ -224,7 +209,7 @@ if os.path.isfile(WEIGHTS_FILE):
     model.load_weights(WEIGHTS_FILE)
 
 # Train model
-model.fit(X_train, y_train, batch_size=BATCH_SIZE, nb_epoch=EPOCHS)
+model.fit(X_train, y_train, batch_size=BATCH_SIZE, nb_epoch=EPOCHS, validation_split=0.2)
 
 sanity_check(model)
 
