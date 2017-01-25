@@ -1,127 +1,124 @@
 import cv2
 import numpy as np
+import multiprocessing
 import os.path
 import pandas as pd
 import re
 
-from image_processing import get_processed_image_shape, process_image
+from image_processing import get_processed_image_shape, crop_hood, crop_sky, resize_image, normalize_image, process_image
 from keras.layers import Dense, Dropout, Flatten, Input
 from keras.layers.convolutional import Convolution2D
 from keras.models import Sequential
 from keras.optimizers import Adam
 from keras.regularizers import l2
+from scipy import ndimage
 from tqdm import tqdm
 
 
-NORMAL_DRIVING_LOG_FILE = 'normal_driving_log.csv'
-RECOVERY_DRIVING_LOG_FILE = 'recovery_driving_log.csv'
+DRIVING_LOG_FILE = 'driving_log.csv'
 MODEL_FILE = 'model.json'
 WEIGHTS_FILE = 'model.h5'
-BATCH_SIZE = 128
-EPOCHS = 10
+BATCH_SIZE = 256
+EPOCHS = 5
+SAMPLES_PER_EPOCH = 102400
+ACTIVATION_FUNCTION = 'tanh'
 LEARNING_RATE = 1e-4
 LAMBDA = 1e-5
-KEEP_PROB = 0.5
-SIDE_CAMERA_STEERING = 0.2
+DROPOUT_KEEP_PROB = 0.5
+SIDE_CAMERA_ANGLE = 0.35               # Angle units
+STRAIGHT_STEERING_ANGLE = 0.1          # Angle units
+MAX_ANGLE_SHIFT = 0.35                 # Angle units
+IMAGES_PER_FULL_STEERING_ANGLE = 0.375 # Factor of horizontal picture size. It's observed that the pictures from the left and right cameras
+                                       # have and offset of about 40px from the center picture. People reported that the angle offset
+                                       # of the side cameras worked good at 0.25. So the full angle of 1.0 would shift image for about
+                                       # 40/0.25=160, which is 160/320=0.5 images per full steering angle.
+MAX_VERTICAL_SHIFT = 0.2               # Factor of vertical picture size
+BRIGHTNESS_SHIFT_LIMITS = (0.25, 1.50) # Factor of original brightness
 
 
-def mirror_image(in_img):
-    mirror_img = np.zeros_like(in_img)
-    mirror_img = cv2.flip(in_img, 1)
-    return mirror_img
+def save_image(in_img, file_name):
+#    out_img = cv2.cvtColor(in_img, cv2.COLOR_YCrCb2BGR)
+    cv2.imwrite(file_name, in_img)
 
-def save_image(in_img, img_name):
-    out_img = cv2.cvtColor(in_img, cv2.COLOR_YCrCb2BGR)
-    cv2.imwrite(img_name, out_img)
+def shift_image(in_img, angle):
+    angle_shift = np.random.uniform(-MAX_ANGLE_SHIFT, MAX_ANGLE_SHIFT)
+#    print("Angle shift %.2f" % (angle_shift))
+    shift_x = angle_shift * IMAGES_PER_FULL_STEERING_ANGLE * in_img.shape[1]
+    shift_y = np.random.randint(-MAX_VERTICAL_SHIFT, MAX_VERTICAL_SHIFT)
+#    print("Shift x, y = %d, %d" % (shift_x, shift_y))
+#    out_img = ndimage.shift(in_img, shift=(shift_y, shift_x, 0), mode='nearest')
+    transformation_matrix = np.float32([[1,0,shift_x],[0,1,shift_y]])
+    out_img = cv2.warpAffine(in_img,
+                             transformation_matrix,
+                             (in_img.shape[1], in_img.shape[0]),
+                             borderMode=cv2.BORDER_REPLICATE)
+    return out_img, angle + angle_shift
+
+def shift_brightness(in_img):
+    img = cv2.cvtColor(in_img, cv2.COLOR_BGR2HSV)
+    brightness_multiplier = np.random.uniform(BRIGHTNESS_SHIFT_LIMITS[0], BRIGHTNESS_SHIFT_LIMITS[1])
+#    print("Brightness factor %.2f" % (brightness_multiplier))
+    img[:,:,2] = img[:,:,2].clip(0, 255 // brightness_multiplier) * brightness_multiplier
+    return cv2.cvtColor(img, cv2.COLOR_HSV2BGR)
+
+def generate_sample_from_log_entry(row):
+    camera_selector = np.random.randint(3)
+    angle = row[3]
+    if camera_selector == 1:
+        angle += SIDE_CAMERA_ANGLE
+    elif camera_selector == 2:
+        angle -= SIDE_CAMERA_ANGLE
+#    print("Original angle %.2f" % (angle))
+    img = cv2.imread(re.search('IMG\/.+', row[camera_selector]).group())
+#    if not os.path.isfile('original.jpg'):
+#        save_image(img, 'original.jpg')
+    # Crop the car hood before shifting the image to prevent it appearing on the picture
+    img = crop_hood(img)
+    img, angle = shift_image(img, angle)
+    # Crop the sky after shifting the image to minimize generating the sky in case of shifting the picture down
+    img = crop_sky(img)
+    img = shift_brightness(img)
+    if np.random.randint(2) != 0:
+        img = cv2.flip(img, 1)
+        angle = -angle
+    img = resize_image(img)
+#    save_image(img, 'generated.jpg')
+    img = normalize_image(img)
+#    if not os.path.isfile('processed.jpg'):
+#        save_image(img, 'processed.jpg')
+#    print("Final angle %.2f" % (angle))
+    return img, angle
+
+def generate_samples_from_driving_log(driving_log_file, batch_size=32, discard_straight_sample_prob=0):
+    driving_log = pd.read_csv(driving_log_file, header=None)
+    X = np.empty(shape=((batch_size,) + get_processed_image_shape()), dtype='uint8')
+    Y = np.empty(shape=(batch_size,), dtype='float32')
+    while True:
+        for idx in range(batch_size):
+            row = driving_log.ix[np.random.randint(len(driving_log))]
+            is_sample_acceptable = None
+            while not is_sample_acceptable:
+                x, y = generate_sample_from_log_entry(row)
+                if abs(y) > STRAIGHT_STEERING_ANGLE or np.random.random() > discard_straight_sample_prob:
+                    is_sample_acceptable = True
+            X[idx] = x
+            Y[idx] = y
+        yield X, Y
 
 def predict_steering_angle(model, img_name):
     img = cv2.imread(img_name)
     transformed_image_array = process_image(img)[None, :, :, :]
     return float(model.predict(transformed_image_array, batch_size=1))
 
-def create_training_set():
-    # Load training set from the driving log
-    normal_driving_log = pd.read_csv(NORMAL_DRIVING_LOG_FILE)
-    recovery_driving_log = pd.read_csv(RECOVERY_DRIVING_LOG_FILE)
-
-    # Get number of log rows
-    n_rows_normal = len(normal_driving_log.index)
-    assert(n_rows_normal > 0)
-    n_rows_recovery = len(recovery_driving_log.index)
-    assert(n_rows_recovery > 0)
-
-    # Define number of images as the number of rows multiplied by 2 (mirrored) and 3 (side cameras)
-    n_images = n_rows_normal * 2 * 3 + n_rows_recovery *2
-
-    # Get sample image to find out its final dimensions
-    assert(len(normal_driving_log.ix[0]) > 0)
-    img = cv2.imread(re.search('IMG\/.+', normal_driving_log.ix[0][0]).group())
-
-    # Create empty training set
-    X_train = np.empty(shape=((n_images,) + get_processed_image_shape(img)), dtype='uint8')
-    y_train = np.empty(shape=(n_images,), dtype='float32')
-    print("Training set shape %s" % (X_train.shape,))
-
-    # Load images
-    idx = 0
-    pbar_rows = tqdm(range(n_rows_normal), desc='Normal', unit=' rows')
-    for pbar_row, (log_idx, row) in zip(pbar_rows, normal_driving_log.iterrows()):
-        assert(row.shape[0] > 3)
-        angle = row[3]
-        # Center
-        img = process_image(cv2.imread(re.search('IMG\/.+', row[0]).group()))
-        X_train[idx] = img
-        y_train[idx] = angle
-        idx += 1
-        # Center mirror
-        X_train[idx] = mirror_image(img)
-        y_train[idx] = -angle
-        idx += 1
-        # Left
-        img = process_image(cv2.imread(re.search('IMG\/.+', row[1]).group()))
-        X_train[idx] = img
-        y_train[idx] = angle + SIDE_CAMERA_STEERING
-        idx += 1
-        # Left mirror
-        X_train[idx] = mirror_image(img)
-        y_train[idx] = -(angle + SIDE_CAMERA_STEERING)
-        idx += 1
-        # Right
-        img = process_image(cv2.imread(re.search('IMG\/.+', row[2]).group()))
-        X_train[idx] = img
-        y_train[idx] = angle - SIDE_CAMERA_STEERING
-        idx += 1
-        # Right mirror
-        X_train[idx] = mirror_image(img)
-        y_train[idx] = -(angle - SIDE_CAMERA_STEERING)
-        idx += 1
-
-    pbar_rows = tqdm(range(n_rows_recovery), desc='Recovery', unit=' rows')
-    for pbar_row, (log_idx, row) in zip(pbar_rows, recovery_driving_log.iterrows()):
-        assert(row.shape[0] > 3)
-        angle = row[3]
-        # Center
-        img = process_image(cv2.imread(re.search('IMG\/.+', row[0]).group()))
-        X_train[idx] = img
-        y_train[idx] = angle
-        idx += 1
-        # Center mirror
-        X_train[idx] = mirror_image(img)
-        y_train[idx] = -angle
-        idx += 1
-
-    return X_train, y_train
-
-def create_model():
+def create_model(input_shape):
     # Model definition
-    activation_function = 'tanh'
     model = Sequential()
     model.add(Convolution2D(24,
                             5,5,
                             subsample=(2,2),
                             border_mode='valid',
-                            input_shape=X_train.shape[1:],
-                            activation=activation_function,
+                            input_shape=input_shape,
+                            activation=ACTIVATION_FUNCTION,
                             W_regularizer=l2(LAMBDA)))
     print("Input shape %s" % (model.layers[-1].input_shape,))
     print("Conv. layer 1 %s" % (model.layers[-1].output_shape,))
@@ -129,44 +126,44 @@ def create_model():
                             5,5,
                             subsample=(2,2),
                             border_mode='valid',
-                            activation=activation_function,
+                            activation=ACTIVATION_FUNCTION,
                             W_regularizer=l2(LAMBDA)))
     print("Conv. layer 2 %s" % (model.layers[-1].output_shape,))
     model.add(Convolution2D(48,
                             5,5,
                             subsample=(2,2),
                             border_mode='valid',
-                            activation=activation_function,
+                            activation=ACTIVATION_FUNCTION,
                             W_regularizer=l2(LAMBDA)))
     print("Conv. layer 3 %s" % (model.layers[-1].output_shape,))
     model.add(Convolution2D(64,
                             3,3,
                             border_mode='valid',
-                            activation=activation_function,
+                            activation=ACTIVATION_FUNCTION,
                             W_regularizer=l2(LAMBDA)))
     print("Conv. layer 4 %s" % (model.layers[-1].output_shape,))
     model.add(Convolution2D(64,
                             3,3,
                             border_mode='valid',
-                            activation=activation_function,
+                            activation=ACTIVATION_FUNCTION,
                             W_regularizer=l2(LAMBDA)))
     print("Conv. layer 5 %s" % (model.layers[-1].output_shape,))
     model.add(Flatten())
     print("Flatten %s" % (model.layers[-1].output_shape,))
     model.add(Dense(100,
-                    activation=activation_function,
+                    activation=ACTIVATION_FUNCTION,
                     W_regularizer=l2(LAMBDA)))
-    model.add(Dropout(KEEP_PROB))
+    model.add(Dropout(DROPOUT_KEEP_PROB))
     print("Fully-connected layer 1 %s" % (model.layers[-1].output_shape,))
     model.add(Dense(50,
-                    activation=activation_function,
+                    activation=ACTIVATION_FUNCTION,
                     W_regularizer=l2(LAMBDA)))
-    model.add(Dropout(KEEP_PROB))
+    model.add(Dropout(DROPOUT_KEEP_PROB))
     print("Fully-connected layer 2 %s" % (model.layers[-1].output_shape,))
     model.add(Dense(10,
-                    activation=activation_function,
+                    activation=ACTIVATION_FUNCTION,
                     W_regularizer=l2(LAMBDA)))
-    model.add(Dropout(KEEP_PROB))
+    model.add(Dropout(DROPOUT_KEEP_PROB))
     print("Fully-connected layer 3 %s" % (model.layers[-1].output_shape,))
     model.add(Dense(1,
                     W_regularizer=l2(LAMBDA)))
@@ -176,12 +173,29 @@ def create_model():
     model.compile(adam, 'mse')
     return model
 
-def sanity_check(model):
-    print("Emergency steering right %f" % (predict_steering_angle(model, 'steer_right.jpg')))
-    print("Emergency steering left %f" % (predict_steering_angle(model, 'steer_left.jpg')))
-    test_file_names = ['center_2017_01_21_17_38_31_549_left.jpg',
-                       'center_2017_01_21_17_38_54_655_straight.jpg',
-                       'center_2017_01_21_17_38_16_238_right.jpg']
+def train_model(model):
+    validation_generator = generate_samples_from_driving_log(DRIVING_LOG_FILE, batch_size=BATCH_SIZE)
+    for epoch in range(EPOCHS):
+        discard_prob = 1-epoch/(EPOCHS-1)
+        print("Epoch %d/%d, probability of discarding straight driving samples %.2f" % (epoch+1, EPOCHS, discard_prob))
+        training_generator = generate_samples_from_driving_log(DRIVING_LOG_FILE,
+                                                               batch_size=BATCH_SIZE,
+                                                               discard_straight_sample_prob=discard_prob)
+        model.fit_generator(training_generator,
+                            samples_per_epoch=SAMPLES_PER_EPOCH,
+                            nb_epoch=1,
+                            validation_data=validation_generator,
+                            nb_val_samples=SAMPLES_PER_EPOCH // 5,
+                            nb_worker=multiprocessing.cpu_count(),
+                            pickle_safe=True)
+
+
+def sanity_check_model(model):
+    print("Emergency steering right %f" % (predict_steering_angle(model, 'emergency_right.jpg')))
+    print("Emergency steering left %f" % (predict_steering_angle(model, 'emergency_left.jpg')))
+    test_file_names = ['left.jpg',
+                       'straight.jpg',
+                       'right.jpg']
     for test_file_name in test_file_names:
         print("Testing %s: %f" % (test_file_name, predict_steering_angle(model, test_file_name)))
 
@@ -192,25 +206,15 @@ def save_model(model):
     with open(MODEL_FILE, 'w') as f:
         f.write(json_model)
 
-
-X_train, y_train = create_training_set()
-#save_image(X_train[1200], "test0_%.2f.jpg" % (y_train[1200]))
-#save_image(X_train[1201], "test1_%.2f.jpg" % (y_train[1201]))
-#save_image(X_train[1202], "test2_%.2f.jpg" % (y_train[1202]))
-#save_image(X_train[1203], "test3_%.2f.jpg" % (y_train[1203]))
-#save_image(X_train[1204], "test4_%.2f.jpg" % (y_train[1204]))
-#save_image(X_train[1205], "test5_%.2f.jpg" % (y_train[1205]))
-
-model = create_model()
+model = create_model(get_processed_image_shape())
 
 # Load weights if exist
 if os.path.isfile(WEIGHTS_FILE):
-    print("Loading existing weights")
+    print("ATTENTION: loading existing weights")
     model.load_weights(WEIGHTS_FILE)
 
-# Train model
-model.fit(X_train, y_train, batch_size=BATCH_SIZE, nb_epoch=EPOCHS, validation_split=0.2)
+train_model(model)
 
-sanity_check(model)
+sanity_check_model(model)
 
 save_model(model)
