@@ -21,14 +21,14 @@ WEIGHTS_FILE = 'model.h5'
 BATCH_SIZE = 256
 EPOCHS = 5
 SAMPLES_PER_EPOCH = 102400
-ACTIVATION_FUNCTION = 'tanh'
-LEARNING_RATE = 1e-4
+ACTIVATION_FUNCTION = 'relu'
+LEARNING_RATE = 5e-4
 LAMBDA = 1e-5
 DROPOUT_KEEP_PROB = 0.5
-SIDE_CAMERA_ANGLE = 0.35               # Angle units
+SIDE_CAMERA_ANGLE = 0.25               # Angle units
 STRAIGHT_STEERING_ANGLE = 0.1          # Angle units
-MAX_ANGLE_SHIFT = 0.35                 # Angle units
-IMAGES_PER_FULL_STEERING_ANGLE = 0.375 # Factor of horizontal picture size. It's observed that the pictures from the left and right cameras
+MAX_ANGLE_SHIFT = 0.25                 # Angle units
+IMAGES_PER_FULL_STEERING_ANGLE = 0.5   # Factor of horizontal picture size. It's observed that the pictures from the left and right cameras
                                        # have and offset of about 40px from the center picture. People reported that the angle offset
                                        # of the side cameras worked good at 0.25. So the full angle of 1.0 would shift image for about
                                        # 40/0.25=160, which is 160/320=0.5 images per full steering angle.
