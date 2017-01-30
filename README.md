@@ -103,6 +103,6 @@ Expected steering angle | Image
 +0.25 | ![Right](right.jpg)
 
 ## Testing Results
-The submitted weights were obtained by training the described model for 10 epochs, then 5 more epochs after testing on track. The resulting test set loss is 0.007, which is pretty reliable indication of a successful model. The model is able to drive track 1 indefinitely at the highest throttle, never crossing yellow lines. Moreover the model is able to drive a big portion of track 2, failing to pass a really tough curve a few minutes after start.
+The submitted weights were obtained by training the described model for 10 epochs, then 5 more epochs after testing on track. The resulting test set loss is 0.007, which is pretty reliable indication of a successful model. The model is able to drive Track 1 indefinitely at the highest throttle, never crossing yellow lines. Moreover the model is able to drive a big portion of Track 2, failing to pass a really tough curve a few minutes after start. The video of the car driving Track 1:
 
 [![](http://img.youtube.com/vi/fG9AJmkXK5s/0.jpg)](http://www.youtube.com/watch?v=fG9AJmkXK5s "Behavioral Cloning")
