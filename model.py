@@ -4,6 +4,9 @@ import numpy as np
 import os.path
 import pandas as pd
 import re
+import sys
+import urllib.request
+import zipfile
 
 from image_processing import get_processed_image_shape, crop_hood, crop_sky, resize_image, normalize_image, process_image
 from keras.layers import Dense, Dropout, Flatten, Input
@@ -14,6 +17,7 @@ from keras.regularizers import l2
 from tqdm import tqdm
 
 
+SAMPLE_DATA_URL = 'https://s3.amazonaws.com/vernor-carnd/behavioral_cloning_data.zip'
 DRIVING_LOG_FILE = 'driving_log.csv'
 MODEL_FILE = 'model.json'
 WEIGHTS_FILE = 'model.h5'
@@ -33,6 +37,28 @@ IMAGES_PER_FULL_STEERING_ANGLE = 0.5   # Factor of horizontal picture size. It's
 MAX_VERTICAL_SHIFT = 0.2               # Factor of vertical picture size
 BRIGHTNESS_SHIFT_LIMITS = (0.25, 1.50) # Factor of original brightness
 
+
+def report_download_progress(block_nr, block_size, size):
+    """ Displays download progress.
+
+    param: block_nr: the block number
+    param: block_size: the block size
+    param: size: the content size
+    """
+    progress = block_nr * block_size
+    sys.stdout.write("\r%.2f" % (100.0 * progress/size))
+
+def download_sample_data(sample_data_url):
+    """ Downloads sample data and unpacks it.
+
+    param: sample_data_url: the sample data URL
+    """
+    file_name = sample_data_url.split('/')[-1]
+    print("Downloading sample data file %s:" % (file_name))
+    urllib.request.urlretrieve(sample_data_url, file_name, report_download_progress)
+    print("\nUnpacking sample data")
+    with zipfile.ZipFile(file_name, "r") as zip_handle:
+        zip_handle.extractall(".")
 
 def shift_image(in_img, angle):
     """ Randomly shifts an image in horizontal and vertical directions.
@@ -261,6 +287,10 @@ model = create_model(get_processed_image_shape())
 if os.path.isfile(WEIGHTS_FILE):
     print("ATTENTION: loading existing weights")
     model.load_weights(WEIGHTS_FILE)
+
+# Download sample data if needed
+if not os.path.isfile(DRIVING_LOG_FILE):
+    download_sample_data(SAMPLE_DATA_URL)
 
 train_model(model, DRIVING_LOG_FILE)
 
