@@ -81,7 +81,14 @@ The training set generator is adjusted every epoch: the probability of discardin
 The validation set is randomply created by the same generator from the original samples without discarding any stright driving samples. The validation set size is 20% of the training set size.
 
 ### Testing Set
-This is just a set of center camera samples from the original sample set. The samples are never shown to the model as-is, but rather used to create the jittered training/validation set, so it could serve a good source of the testing data. All images are cropped, resized and normalized.
+This is just a set of center camera samples from the original sample set. The samples are never shown to the model as-is, but rather used to create the jittered training/validation set, so it could serve a good source of the testing data. All images are cropped, resized and normalized. Besides the testing, there's a sanity check, which provides a visible estimate of the rough model performance:
+
+
+Expected steering angle | Image
+--- | ---
+-0.25 | ![Left](left.jpg)
+0.00 | ![Straight](straight.jpg)
++0.25 | ![Right](right.jpg)
 
 ## Testing Results
 The submitted weights were obtained by training the described model for 10 epochs, then 5 more epochs after testing on track. The resulting test set loss is 0.007, which is pretty reliable indication of a successful model. The model is able to drive track 1 indefinitely at the highest throttle, never crossing yellow lines. Moreover the model is able to drive a big portion of track 2, failing to pass a really tough curve a few minutes after start.
