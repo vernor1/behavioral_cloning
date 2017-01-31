@@ -103,6 +103,23 @@ Expected steering angle | Image
 +0.25 | ![Right](right.jpg)
 
 ## Testing Results
-The submitted weights were obtained by training the described model for 10 epochs, then 5 more epochs after testing on track. The resulting test set loss is 0.007, which is a rough indication of a good model. Only test driving on track can prove the correctness. The model is able to drive Track 1 indefinitely at the highest throttle of 0.3 (30 MPH), never crossing yellow lines. Moreover the model is able to drive a big portion of Track 2, failing to pass a really tough curve a few minutes after start. Watch the video of the car driving Track 1:
+The submitted weights were obtained by training the described model for 15 epochs. The resulting test set loss is 0.007, which is a rough indication of a good model. Only test driving on track can prove the correctness. The model is able to drive Track 1 indefinitely at the highest throttle of 0.3 (30 MPH), never crossing yellow lines. Moreover the model is able to drive a big portion of Track 2, failing to pass a really tough curve a few minutes after start.
 
-[![](http://img.youtube.com/vi/fG9AJmkXK5s/0.jpg)](http://www.youtube.com/watch?v=fG9AJmkXK5s "Behavioral Cloning")
+## How to Test Model
+Install the [CarND Term1 Starter Kit](https://github.com/udacity/CarND-Term1-Starter-Kit/blob/master/README.md). Download the simulator for [macOS](https://d17h27t6h515a5.cloudfront.net/topher/2016/November/5831f290_simulator-macos/simulator-macos.zip), or [Linux](https://d17h27t6h515a5.cloudfront.net/topher/2016/November/5831f0f7_simulator-linux/simulator-linux.zip), or [Windows](https://d17h27t6h515a5.cloudfront.net/topher/2016/November/5831f3a4_simulator-windows-64/simulator-windows-64.zip). Clone this repo nad start the driving script:
+```
+tmp vernor$ git clone https://github.com/vernor1/behavioral_cloning.git
+Cloning into 'behavioral_cloning'...
+remote: Counting objects: 79, done.
+remote: Compressing objects: 100% (51/51), done.
+remote: Total 79 (delta 32), reused 69 (delta 25), pack-reused 0
+Unpacking objects: 100% (79/79), done.
+tmp vernor$ cd behavioral_cloning
+behavioral_cloning vernor$ source activate carnd-term1
+(carnd-term1) behavioral_cloning vernor$ python drive.py model.json
+Using TensorFlow backend.
+(53208) wsgi starting up on http://0.0.0.0:4567
+```
+Then start the simulation and watch the autonomous driving! Watch the sample video of the car driving Track 1:
+
+[![](http://img.youtube.com/vi/uT5Rhpd_gJ8/0.jpg)](http://www.youtube.com/watch?v=uT5Rhpd_gJ8 "Behavioral Cloning")
