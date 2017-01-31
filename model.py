@@ -280,22 +280,22 @@ def save_model(model, model_file, weights_file):
     with open(model_file, 'w') as f:
         f.write(json_model)
 
+if __name__ == '__main__':
+    model = create_model(get_processed_image_shape())
 
-model = create_model(get_processed_image_shape())
+    # Load weights if exist
+    if os.path.isfile(WEIGHTS_FILE):
+        print("ATTENTION: loading existing weights")
+        model.load_weights(WEIGHTS_FILE)
 
-# Load weights if exist
-if os.path.isfile(WEIGHTS_FILE):
-    print("ATTENTION: loading existing weights")
-    model.load_weights(WEIGHTS_FILE)
+    # Download sample data if needed
+    if not os.path.isfile(DRIVING_LOG_FILE):
+        download_sample_data(SAMPLE_DATA_URL)
 
-# Download sample data if needed
-if not os.path.isfile(DRIVING_LOG_FILE):
-    download_sample_data(SAMPLE_DATA_URL)
+    train_model(model, DRIVING_LOG_FILE)
 
-train_model(model, DRIVING_LOG_FILE)
+    sanity_check_model(model)
 
-sanity_check_model(model)
+    test_model(model, DRIVING_LOG_FILE)
 
-test_model(model, DRIVING_LOG_FILE)
-
-save_model(model, MODEL_FILE, WEIGHTS_FILE)
+    save_model(model, MODEL_FILE, WEIGHTS_FILE)
