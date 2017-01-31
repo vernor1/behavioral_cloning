@@ -78,7 +78,7 @@ The original samples are not suitable for direct training since the probability 
 Here's an example of the augmented sample:
 
 Action | Image
---- | ---
+---|:---:
 Original left image (adjusted angle=0.26) | ![](supplemental/original.jpg)
 Cropped hood | ![](supplemental/cropped_hood.jpg)
 Shifted (adjusted angle=0.04) | ![](supplemental/shifted.jpg)
@@ -97,7 +97,7 @@ This is just a set of center camera samples from the original sample set. The sa
 
 
 Expected steering angle | Image
---- | ---
+---:|:---:
 -0.25 | ![Left](left.jpg)
 0.00 | ![Straight](straight.jpg)
 +0.25 | ![Right](right.jpg)
