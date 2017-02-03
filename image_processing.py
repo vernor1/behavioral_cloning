@@ -18,9 +18,6 @@ def crop_hood(img):
 def crop_sky(img):
     return img[floor(img.shape[0]*SKY_PART):,:,:]
 
-def resize_image(img):
-    return cv2.resize(img, PROCESSED_IMAGE_SHAPE[:-1][::-1], interpolation=cv2.INTER_AREA)
-
 def normalize_image(in_img):
     out_img = np.empty_like(in_img)
     cv2.normalize(in_img, out_img, alpha=0, beta=255, norm_type=cv2.NORM_MINMAX)
@@ -30,5 +27,4 @@ def process_image(img):
     img = crop_hood(img)
     img = crop_sky(img)
     img = resize_image(img)
-    img = normalize_image(img)
     return img

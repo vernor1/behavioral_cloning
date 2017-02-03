@@ -1,4 +1,8 @@
 import cv2
+import matplotlib
+# Force matplotlib to not use any Xwindows backend.
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
 import multiprocessing
 import numpy as np
 import os.path
@@ -9,33 +13,42 @@ import urllib.request
 import zipfile
 
 from image_processing import get_processed_image_shape, crop_hood, crop_sky, resize_image, normalize_image, process_image
-from keras.layers import Dense, Dropout, Flatten, Input
+from keras.layers import Dense, Dropout, Flatten, Input, Lambda
 from keras.layers.convolutional import Convolution2D
+from keras.layers.normalization import BatchNormalization
 from keras.models import Sequential
 from keras.optimizers import Adam
 from keras.regularizers import l2
+from sklearn.model_selection import train_test_split
+from sklearn.utils import shuffle
 from tqdm import tqdm
 
-
+# Global constants
 SAMPLE_DATA_URL = 'https://s3.amazonaws.com/vernor-carnd/behavioral_cloning_data.zip'
 DRIVING_LOG_FILE = 'driving_log.csv'
 MODEL_FILE = 'model.json'
 WEIGHTS_FILE = 'model.h5'
-BATCH_SIZE = 256
-EPOCHS = 15
-SAMPLES_PER_EPOCH = 102400
+BATCH_SIZE = 128
+TEST_BATCH_SIZE = 1024
+EPOCHS = 20
+SAMPLES_PER_EPOCH = 12800
 ACTIVATION_FUNCTION = 'relu'
-LEARNING_RATE = 5e-4
-LAMBDA = 1e-5
-STRAIGHT_STEERING_ANGLE = 0.1          # Angle units
+LEARNING_RATE = 1e-4
+LAMBDA = 1e-3
+DISCARD_STRAIGHT_SAMPLE_PROB = 0.8    # Probability of discarding straight driving samples taked from the center camera
+STRAIGHT_STEERING_ANGLE = 0.1         # Angle units
 SIDE_CAMERA_ANGLE = 0.25               # Angle units
-MAX_ANGLE_SHIFT = 0.25                 # Angle units
+MAX_ANGLE_SHIFT = 0.1                  # Angle units
 IMAGES_PER_FULL_STEERING_ANGLE = 0.5   # Factor of horizontal picture size. It's observed that the pictures from the left and right cameras
                                        # have and offset of about 40px from the center picture. People reported that the angle offset
                                        # of the side cameras worked good at 0.25. So the full angle of 1.0 would shift image for about
                                        # 40/0.25=160, which is 160/320=0.5 images per full steering angle.
 MAX_VERTICAL_SHIFT = 0.2               # Factor of vertical picture size
-BRIGHTNESS_SHIFT_LIMITS = (0.25, 1.50) # Factor of original brightness
+BRIGHTNESS_SHIFT_LIMITS = (0.25, 1.25) # Factor of original brightness
+DEBUG_IMAGES_ENABLED = True            # If the boolean constant is set to True, the supplementary debug images are dumped
+
+# Global variables
+debug_images_dumped = True
 
 
 def report_download_progress(block_nr, block_size, size):
@@ -54,19 +67,83 @@ def download_sample_data(sample_data_url):
     param: sample_data_url: the sample data URL
     """
     file_name = sample_data_url.split('/')[-1]
-    print("Downloading sample data file %s:" % (file_name))
-    urllib.request.urlretrieve(sample_data_url, file_name, report_download_progress)
+    if not os.path.isfile(file_name):
+        print("Downloading sample data file %s:" % (file_name))
+        urllib.request.urlretrieve(sample_data_url, file_name, report_download_progress)
     print("\nUnpacking sample data")
     with zipfile.ZipFile(file_name, "r") as zip_handle:
         zip_handle.extractall(".")
 
-def shift_image(in_img, angle):
+def save_histogram(angles, file_name):
+    fig = plt.figure()
+    ax = fig.add_subplot(111)
+    ax.set_xlabel('Steering Angle')
+    ax.set_ylabel('# of Samples')
+    n, bins, patches = plt.hist(angles, bins=40, range=(-1., 1.))
+    fig.savefig(file_name)
+
+def prepare_training_set(driving_log_file):
+    driving_log = pd.read_csv(driving_log_file, header=None)
+    if DEBUG_IMAGES_ENABLED:
+        save_histogram(driving_log[3], "original_distribution.svg")
+    X_train = []
+    y_train = []
+
+    pbar_rows = tqdm(range(len(driving_log)), desc='Processing driving log', unit=' samples')
+    for pbar_row, (idx, row) in zip(pbar_rows, driving_log.iterrows()):
+        center_img_path = re.search('IMG\/.+', row[0]).group()
+        left_img_path = re.search('IMG\/.+', row[1]).group()
+        right_img_path = re.search('IMG\/.+', row[2]).group()
+        angle = row[3]
+        if abs(angle) < STRAIGHT_STEERING_ANGLE:
+            if np.random.random() > DISCARD_STRAIGHT_SAMPLE_PROB:
+                # If driving straight, use only a fraction of center camera images for training
+                X_train.append(center_img_path)
+                y_train.append(angle)
+                if angle < 0:
+                    # Left steering: use right camera, adjust steering angle to the left
+                    X_train.append(right_img_path)
+                    y_train.append(angle - SIDE_CAMERA_ANGLE)
+                elif angle > 0:
+                    # Right steering: use left camera, ajust steering to the right
+                    X_train.append(left_img_path)
+                    y_train.append(angle + SIDE_CAMERA_ANGLE)
+        else:
+            # If the sample is a steering one, always use the center camera image for training
+            # as well as the image from the camera facing the outer shoulder
+            X_train.append(center_img_path)
+            y_train.append(angle)
+            if angle < 0:
+                # Left steering: use right camera, adjust steering angle to the left
+                X_train.append(right_img_path)
+                y_train.append(angle - SIDE_CAMERA_ANGLE)
+            else:
+                # Right steering: use left camera, ajust steering to the right
+                X_train.append(left_img_path)
+                y_train.append(angle + SIDE_CAMERA_ANGLE)
+
+    pbar_samples = tqdm(range(len(y_train)), desc='Generating flips and distortions', unit=' samples')
+    for idx in pbar_samples:
+        angle_shift = np.random.uniform(-MAX_ANGLE_SHIFT, MAX_ANGLE_SHIFT)
+        is_flipped = np.random.randint(2)
+        if not is_flipped:
+            y_train[idx] = y_train[idx]+angle_shift
+        else:
+            y_train[idx] = -(y_train[idx]+angle_shift)
+        # Transform X_train by replacing the path values with tuples (path, is_flipped, angle_shift)
+        X_train[idx] = (X_train[idx], is_flipped, angle_shift)
+
+    if DEBUG_IMAGES_ENABLED:
+        save_histogram(y_train, "balanced_distribution.svg")
+
+    return X_train, y_train
+
+def shift_image(in_img, angle_shift):
     """ Randomly shifts an image in horizontal and vertical directions.
 
     param: in_img: the original image
     returns: the randomly changed image
     """
-    angle_shift = np.random.uniform(-MAX_ANGLE_SHIFT, MAX_ANGLE_SHIFT)
     shift_x = angle_shift * IMAGES_PER_FULL_STEERING_ANGLE * in_img.shape[1]
     shift_y = np.random.randint(-MAX_VERTICAL_SHIFT, MAX_VERTICAL_SHIFT)
     transformation_matrix = np.float32([[1,0,shift_x],[0,1,shift_y]])
@@ -74,7 +151,7 @@ def shift_image(in_img, angle):
                              transformation_matrix,
                              (in_img.shape[1], in_img.shape[0]),
                              borderMode=cv2.BORDER_REPLICATE)
-    return out_img, angle + angle_shift
+    return out_img
 
 def shift_brightness(in_img):
     """ Randomly shifts brightness of an image.
@@ -87,34 +164,7 @@ def shift_brightness(in_img):
     img[:,:,2] = img[:,:,2].clip(0, 255 // brightness_multiplier) * brightness_multiplier
     return cv2.cvtColor(img, cv2.COLOR_HSV2BGR)
 
-
-def generate_single_sample(row):
-    """ Generated a single sample from a driving log entry.
-
-    param: row: the Pandas row
-    returns: the sample image and the corresponding steering angle
-    """
-    camera_selector = np.random.randint(3)
-    angle = row[3]
-    if camera_selector == 1:
-        angle += SIDE_CAMERA_ANGLE
-    elif camera_selector == 2:
-        angle -= SIDE_CAMERA_ANGLE
-    img = cv2.imread(re.search('IMG\/.+', row[camera_selector]).group())
-    # Crop the car hood before shifting the image to prevent it appearing on the picture
-    img = crop_hood(img)
-    img, angle = shift_image(img, angle)
-    # Crop the sky after shifting the image to minimize generating the sky in case of shifting the picture down
-    img = crop_sky(img)
-    img = shift_brightness(img)
-    if np.random.randint(2) != 0:
-        img = cv2.flip(img, 1)
-        angle = -angle
-    img = resize_image(img)
-    img = normalize_image(img)
-    return img, angle
-
-def generate_samples(driving_log_file, batch_size=32, discard_straight_sample_prob=0):
+def generate_samples(X, y, batch_size=32):
     """ Generates samples from driving log.
 
     param: driving_log_file: the file name of the driving log
@@ -122,20 +172,43 @@ def generate_samples(driving_log_file, batch_size=32, discard_straight_sample_pr
     param: discard_straight_sample_prob: the probability of discarding a straight driving sample, if generated
     returns: the tuple of the sample images and the corresponding steering angles
     """
-    driving_log = pd.read_csv(driving_log_file, header=None)
-    X = np.empty(shape=((batch_size,) + get_processed_image_shape()), dtype='uint8')
-    Y = np.empty(shape=(batch_size,), dtype='float32')
+    assert(len(X) == len(y))
+    X_batch = np.empty(shape=((batch_size,) + get_processed_image_shape()), dtype='uint8')
+    y_batch = np.empty(shape=(batch_size,), dtype='float32')
+    global debug_images_dumped
     while True:
-        for idx in range(batch_size):
-            row = driving_log.ix[np.random.randint(len(driving_log))]
-            is_sample_acceptable = None
-            while not is_sample_acceptable:
-                x, y = generate_single_sample(row)
-                if abs(y) > STRAIGHT_STEERING_ANGLE or np.random.random() > discard_straight_sample_prob:
-                    is_sample_acceptable = True
-            X[idx] = x
-            Y[idx] = y
-        yield X, Y
+        for batch_idx in range(batch_size):
+            source_idx = np.random.randint(len(y))
+            # X[][0] provides the image path
+            img = cv2.imread(X[source_idx][0])
+            if DEBUG_IMAGES_ENABLED and not debug_images_dumped:
+                cv2.imwrite("original.jpg", img)
+            # Crop the car hood before shifting the image to prevent it appearing on the picture
+            img = crop_hood(img)
+            if DEBUG_IMAGES_ENABLED and not debug_images_dumped:
+                cv2.imwrite("cropped_hood.jpg", img)
+            # X[][2] provides the angle shift (before possible flipping)
+            img = shift_image(img, X[source_idx][2])
+            if DEBUG_IMAGES_ENABLED and not debug_images_dumped:
+                cv2.imwrite("shifted_image_%.2f.jpg" % (X[source_idx][2]), img)
+            # Crop the sky after shifting the image to minimize generating the sky in case of shifting the picture down
+            img = crop_sky(img)
+            if DEBUG_IMAGES_ENABLED and not debug_images_dumped:
+                cv2.imwrite("cropped_sky.jpg", img)
+            img = shift_brightness(img)
+            if DEBUG_IMAGES_ENABLED and not debug_images_dumped:
+                cv2.imwrite("shifted_brightness.jpg", img)
+            # X[][2] indicates the flip
+            if X[source_idx][1]:
+                img = cv2.flip(img, 1)
+                if DEBUG_IMAGES_ENABLED and not debug_images_dumped:
+                    cv2.imwrite("flipped.jpg", img)
+            img = resize_image(img)
+            if DEBUG_IMAGES_ENABLED and not debug_images_dumped:
+                cv2.imwrite("resized.jpg", img)
+            debug_images_dumped = True
+            X_batch[batch_idx], y_batch[batch_idx] = img, y[source_idx]
+        yield X_batch, y_batch
 
 def create_model(input_shape):
     """ Creates a new model.
@@ -144,11 +217,12 @@ def create_model(input_shape):
     returns: the model
     """
     model = Sequential()
+    model.add(Lambda(lambda x: x/255.-0.5, input_shape=input_shape))
+#    model.add(BatchNormalization(input_shape=input_shape))
     model.add(Convolution2D(24,
                             5,5,
                             subsample=(2,2),
                             border_mode='valid',
-                            input_shape=input_shape,
                             activation=ACTIVATION_FUNCTION,
                             W_regularizer=l2(LAMBDA)))
     model.add(Convolution2D(36,
@@ -199,20 +273,20 @@ def train_model(model, driving_log_file):
     param: model: the model to train
     param: driving_log_file: the file name of the driving log
     """
-    validation_generator = generate_samples(driving_log_file, batch_size=BATCH_SIZE)
-    for epoch in range(EPOCHS):
-        discard_prob = 1-epoch/(EPOCHS-1)
-        print("Epoch %d/%d, probability of discarding straight driving samples %.2f" % (epoch+1, EPOCHS, discard_prob))
-        training_generator = generate_samples(DRIVING_LOG_FILE,
-                                              batch_size=BATCH_SIZE,
-                                              discard_straight_sample_prob=discard_prob)
-        model.fit_generator(training_generator,
-                            samples_per_epoch=SAMPLES_PER_EPOCH,
-                            nb_epoch=1,
-                            validation_data=validation_generator,
-                            nb_val_samples=SAMPLES_PER_EPOCH // 5,
-                            nb_worker=multiprocessing.cpu_count(),
-                            pickle_safe=True)
+    print("Preparing training set")
+    X_train, y_train = prepare_training_set(DRIVING_LOG_FILE)
+    X_train, y_train = shuffle(X_train, y_train)
+    X_train, X_validation, y_train, y_validation = train_test_split(X_train, y_train, test_size=0.1, random_state=0)
+    training_generator = generate_samples(X_train, y_train, batch_size=BATCH_SIZE)
+    validation_generator = generate_samples(X_validation, y_validation, batch_size=BATCH_SIZE)
+    print("Training model")
+    model.fit_generator(training_generator,
+                        samples_per_epoch=SAMPLES_PER_EPOCH,
+                        nb_epoch=EPOCHS,
+                        validation_data=validation_generator,
+                        nb_val_samples=SAMPLES_PER_EPOCH // 5,
+                        nb_worker=multiprocessing.cpu_count(),
+                        pickle_safe=True)
 
 def load_center_samples(driving_log_file):
     """ Loads and processes center images from a driving log.
@@ -241,7 +315,7 @@ def test_model(model, driving_log_file):
     print("Loading test tamples")
     X_test, y_test = load_center_samples(driving_log_file)
     print("Testing model")
-    test_score = model.evaluate(X_test, y_test, batch_size=BATCH_SIZE)
+    test_score = model.evaluate(X_test, y_test, batch_size=TEST_BATCH_SIZE)
     print("Test loss %.4f" % (test_score))
 
 def predict_steering_angle(model, img_name):
